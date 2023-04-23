@@ -24,7 +24,7 @@ It can be broken down into 3 main sections:
 2. *DBUser, DBPassword, DBName and DBRootPassword* for the MySQL database, which is required for the wordpress website to work.
 
 **Resources**
-- For a cleaner and more effecient template, Nested Stacks were used to create VPC, NACL and Subnet for the setup
+- For a cleaner and more effecient template, Nested Stacks were used to create VPC, NACL and Subnet for the setup( nacl.json, subnet.json and vpc.json)
 - Other resources created include: Security Groups, Elastic IP and EC2 Instance.
 
 **Outputs**
