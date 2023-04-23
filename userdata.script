@@ -1,0 +1,182 @@
+"#!/bin/bash"
+
+"#update the system"
+"sudo apt update"
+"sudo apt upgrade"
+
+"#install packages"
+"sudo apt install nginx mariadb-server php-fpm php-mysql -y"
+
+"###################################"
+"####---wordpress installation---###"
+"###################################"
+"cd /var/www/"
+"wget https://wordpress.org/latest.tar.gz"
+"sudo tar -xzvf latest.tar.gz"
+"rm latest.tar.gz"
+"sudo chown -R www-data:www-data wordpress/ "
+"sudo find wordpress/ -type d -exec chmod 755 {} \;"
+"sudo find wordpress/ -type f -exec chmod 644 {} \;"
+
+
+"###--DATABASE SETUP--###"
+
+"sudo tee /tmp/mysql-setup.sql > /dev/null <<EOF"
+"CREATE DATABASE example_db DEFAULT CHARACTER SET utf8 COLLATE utf8_unicode_ci;"
+"CREATE USER 'example_user'@'localhost' IDENTIFIED BY 'example_pw';"
+"GRANT ALL PRIVILEGES ON example_db.* TO 'example_user'@'localhost';"
+"FLUSH PRIVILEGES;"
+"EOF"
+"sudo mysql_secure_installation"
+"sudo mysql -u root < /tmp/mysql-setup.sql"
+
+
+"######--NGINX SETUP--######"
+
+"EIP=${Fn::GetAtt: MyElasticIP, PublicIp}"
+"cd /etc/nginx"
+"cd sites-available/"
+"cat << EOF > /etc/nginx/sites-available/wordpress.conf"
+"upstream php-handler {"
+"        server unix:/var/run/php/php8.1-fpm.sock;"
+"}"
+"server {"
+      "  listen 8080;"
+        "server_name $EIP;"
+       " root /var/www/wordpress;"
+        "index index.php;"
+       ' location / {'
+               " try_files $uri $uri/ /index.php?$args;"
+       " }"
+        "location ~ \.php$ {"
+                "include snippets/fastcgi-php.conf;"
+               " fastcgi_pass php-handler;"
+    "    }"
+"}"
+"EOF"
+
+"#change the server_name to the elastic ip address
+#ensure proper php version"
+
+"#create a soft link for the file in /sites-enabled"
+"sudo ln -s /etc/nginx/sites-available/wordpress.conf /etc/nginx/sites-enabled/"
+
+"#some additional packages and nginx restart"
+"sudo apt install php-curl php-dom php-mbstring php-imagick php-zip php-gd"
+"sudo systemctl restart nginx"
+
+
+"###---REVERSE PROXY SETUP---####"
+
+
+"cat << EOF > /etc/nginx/nginx.conf"
+"user www-data;"
+"worker_processes auto;"
+"pid /run/nginx.pid;"
+"include /etc/nginx/modules-enabled/*.conf;"
+
+"events {"
+      "  worker_connections 768;"
+     "   # multi_accept on;"
+"}"
+
+"http {"
+
+       " ##
+        # Basic Settings
+        ##"
+
+        "sendfile on;"
+     "   tcp_nopush on;"
+        "types_hash_max_size 2048;"
+      "  # server_tokens off;"
+
+  "     # server_names_hash_bucket_size 64;"
+       " # server_name_in_redirect off;"
+
+       " include /etc/nginx/mime.types;"
+        "default_type application/octet-stream;"
+
+       " ##
+        # SSL Settings
+        ##"
+
+        "ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3; # Dropping SSLv3, ref: POODLE  ssl_prefer_server_ciphers on;"
+
+        "##
+        # Logging Settings
+        ##"
+
+        "access_log /var/log/nginx/access.log;"
+        "error_log /var/log/nginx/error.log;"
+
+        "server{"
+                "listen 80;"
+                "server_name $EIP;"
+
+               " location / {"
+                "proxy_pass http://localhost:8080;"
+                "proxy_set_header Host $host;"
+    "proxy_set_header X-Real-IP $remote_addr;"
+    "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
+
+"}"
+
+"location /wp-admin {"
+               " allow 171.61.116.103;"
+               " deny all;"
+                "proxy_pass http://localhost:8080;"
+                "proxy_set_header Host $host;"
+    "proxy_set_header X-Real-IP $remote_addr;"
+    "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
+
+"}"
+
+"}"
+        "##
+        # Gzip Settings
+        ##"
+
+    "    gzip on;"
+
+        "# gzip_vary on;
+        # gzip_proxied any;
+        # gzip_comp_level 6;
+        # gzip_buffers 16 8k;
+        # gzip_http_version 1.1;
+        # gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+        ##
+        # Virtual Host Configs
+        ##"
+        "include /etc/nginx/conf.d/*.conf;"
+        "include /etc/nginx/sites-enabled/*;"
+}
+
+
+"#mail {
+#       # See sample authentication script at:
+#       # http://wiki.nginx.org/ImapAuthenticateWithApachePhpScript
+#
+#       # auth_http localhost/auth.php;
+#       # pop3_capabilities "TOP" "USER";
+#       # imap_capabilities "IMAP4rev1" "UIDPLUS";
+#
+#       server {
+#               listen     localhost:110;
+#               protocol   pop3;
+#               proxy      on;
+#       }
+#
+#       server {
+#               listen     localhost:143;
+#               protocol   imap;
+#               proxy      on;
+#       }"
+"EOF"
+
+
+
+
+
+
+

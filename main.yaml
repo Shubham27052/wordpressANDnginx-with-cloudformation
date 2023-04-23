@@ -1,0 +1,352 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS CloudFormation Sample Template VPC_Single_Instance_In_Subnet: Sample
+  template showing how to create a VPC and add an EC2 instance with an Elastic IP
+  address and a security group. **WARNING** This template creates an Amazon EC2 instance.
+  You will be billed for the AWS resources used if you create a stack from this template.'
+Parameters:
+  InstanceType:
+    Description: Mention the instance type.
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+    - t2.micro
+    - t2.small
+    - t2.large
+    - t2.medium
+    ConstraintDescription: mention a valid instance type
+  DBName:
+    Default: wordpressdb
+    Description: The WordPress database name
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: must begin with a letter and contain only alphanumeric
+      characters.
+  DBUser:
+    NoEcho: 'true'
+    Description: The WordPress database admin account username
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: must begin with a letter and contain only alphanumeric
+      characters.
+  DBPassword:
+    NoEcho: 'true'
+    Description: The WordPress database admin account password
+    Type: String
+    MinLength: '8'
+    MaxLength: '41'
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: must contain only alphanumeric characters.
+  DBRootPassword:
+    NoEcho: 'true'
+    Description: MySQL root password
+    Type: String
+    MinLength: '8'
+    MaxLength: '41'
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: must contain only alphanumeric characters.
+Resources:
+  NestedVpc:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://nested-stacks.s3.amazonaws.com/vpc.json
+  NestedNacl:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://nested-stacks.s3.amazonaws.com/nacl.json
+      Parameters:
+        VpcId: !GetAtt NestedVpc.Outputs.VpcId
+  NestedSubnet:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://nested-stacks.s3.amazonaws.com/subnet.json
+      Parameters:
+        VpcId: !GetAtt NestedVpc.Outputs.VpcId
+        GatewayId: !GetAtt NestedVpc.Outputs.GatewayId
+  SubnetNetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        !GetAtt NestedSubnet.Outputs.SubnetId
+      NetworkAclId:
+        !GetAtt NestedNacl.Outputs.NetworkAclId
+    DependsOn:
+    - NestedNacl
+    - NestedSubnet
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !GetAtt NestedVpc.Outputs.VpcId
+      GroupDescription: Enable ssh access via port 22
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: '0.0.0.0/0'
+    DependsOn: NestedVpc
+  IPAddress:
+    Type: AWS::EC2::EIP
+    DependsOn: NestedVpc
+    Properties:
+      Domain: vpc
+  WebServerInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+    - NestedVpc
+    - NestedSubnet
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          ec2_setup:
+            - config_cfn
+            - install_packages
+            - config_wordpress
+            - create_database
+            - config_reverse_proxy
+        config_cfn:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Join 
+                - ''
+                - - |
+                    [main]
+                  - stack=
+                  - !Ref 'AWS::StackId'
+                  - |+
+                  - region=
+                  - !Ref 'AWS::Region'
+                  - |+
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Join 
+                - ''
+                - - |
+                    [cfn-auto-reloader-hook]
+                  - |
+                    triggers=post.update
+                  - >
+                    path=Resources.WebServerInstance.Metadata.AWS::CloudFormation::Init
+                  - 'action=/opt/aws/bin/cfn-init -v '
+                  - '         --stack '
+                  - !Ref 'AWS::StackName'
+                  - '         --resource WebServerInstance '
+                  - '         --configsets InstallAndRun '
+                  - '         --region '
+                  - !Ref 'AWS::Region'
+                  - |+
+                  - |
+                    runas=root
+              mode: '000400'
+              owner: root
+              group: root
+            /lib/systemd/system/cfn-hup.service:
+              content: !Sub |
+                [Unit]
+                Description=cfn-hup daemon
+
+                [Service]
+                Type=simple
+                ExecStart=/usr/local/bin/cfn-hup
+                Restart=always
+                
+                [Install]
+                WantedBy=multi-user.target
+          commands:
+            01enable_cfn_hup:
+              command: systemctl enable cfn-hup.service
+            02start_cfn_hup:
+              command: systemctl start cfn-hup.service
+        install_packages:
+          commands:
+            01_install_nginx_and_phpsql:
+              command: "sudo apt install nginx mariadb-server php-fpm php-mysql -y"
+            02a_mkdir_var_www:
+              command: "mkdir -p /var/www/"
+            02b_download_wordpress:
+              cwd: /var/www/
+              command: "wget https://wordpress.org/latest.tar.gz"
+            03_unzip_wordpress_file:
+              cwd: /var/www/
+              command: "sudo tar -xzvf latest.tar.gz"
+            04_remove_tarfile:
+              cwd: /var/www/
+              command: "rm latest.tar.gz"
+            05_chown_wordpress:
+              cwd: /var/www/
+              command: "sudo chown -R www-data:www-data wordpress/"
+            06_chmod_wordpress:
+              cwd: /var/www/
+              command: "sudo chmod 755 wordpress/*"
+            07_mkdir_nginx_sites_available:
+              command: "mkdir -p /etc/nginx/sites-available"
+            08_mkdir_nginx_sites_enabled:
+              command: "mkdir -p /etc/nginx/sites-enabled"
+            09_makefile_nginx_sites_available_wordpress:
+              command: "touch /etc/nginx/sites-available/wordpress.conf"
+        config_wordpress:
+          files:
+            "/etc/nginx/sites-available/wordpress.conf":
+              content: !Sub |
+                upstream php-handler {
+                    server unix:/var/run/php/php8.1-fpm.sock;
+                }
+                server {
+                        listen 8080;
+                        server_name ${IPAddress};
+                        root /var/www/wordpress;
+                        index index.php;
+                        location / {
+                            try_files $uri $uri/ /index.php?$args;
+                        }
+                        location ~ \.php$ {
+                            include snippets/fastcgi-php.conf;
+                            fastcgi_pass php-handler;
+                        }
+                }
+          commands:
+            00_soft_link:
+              command: "sudo ln -s /etc/nginx/sites-available/wordpress.conf /etc/nginx/sites-enabled/"
+            03_create_setup_mysql:
+              command: "touch /tmp/setup.mysql"
+            04_create_wp_config:
+              command: "touch /tmp/create-wp-config"
+            make_setup_mysql_executable:
+              command: "chmod 777 /tmp/setup.mysql"
+            make_create_wp_config_executable:
+              command: "chmod 755 /tmp/create-wp-config"
+        create_database:
+          files:
+            /tmp/setup.mysql:
+              content: !Sub |
+                CREATE DATABASE ${DBName};
+                CREATE USER '${DBUser}'@'localhost' IDENTIFIED BY '${DBPassword}';
+                GRANT ALL ON ${DBName}.* TO '${DBUser}'@'localhost';
+                FLUSH PRIVILEGES;
+            /tmp/create-wp-config:
+              content: !Sub |
+                #!/bin/bash -xe
+                cp /var/www/wordpress/wp-config-sample.php /var/www/wordpress/wp-config.php
+                sed -i "s/'database_name_here'/'${DBName}'/g" /var/www/wordpress/wp-config.php
+                sed -i "s/'username_here'/'${DBUser}'/g" /var/www/wordpress/wp-config.php
+                sed -i "s/'password_here'/'${DBPassword}'/g" /var/www/wordpress/wp-config.php
+          commands:
+            00_set_root_password:
+              command: !Sub |
+                sudo mysqladmin -u root password ${DBRootPassword}
+            01_create_database:
+              command: !Sub |
+                sudo mysql -u root --password=${DBRootPassword} < /tmp/setup.mysql
+            02_configure_wordpress:
+              command: sudo /tmp/create-wp-config
+              cwd: /var/www/wordpress
+        config_reverse_proxy:
+          files:
+            "/etc/nginx/nginx.conf":
+              content: !Sub |
+                user www-data;
+                worker_processes auto;
+                pid /run/nginx.pid;
+                include /etc/nginx/modules-enabled/*.conf;
+                events {
+                  worker_connections 768;
+                  # multi_accept on;
+                }
+                http {
+                  ### Basic Settings##
+                  sendfile on;
+                  tcp_nopush on;
+                  types_hash_max_size 2048;
+                  # server_tokens off;
+                  # server_names_hash_bucket_size 64;
+                  # server_name_in_redirect off;
+                  include /etc/nginx/mime.types;
+                  default_type application/octet-stream;
+                  ### SSL Settings##
+                  ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3; # Dropping SSLv3, ref: POODLE  ssl_prefer_server_ciphers on;
+                  ### Logging Settings##
+                  access_log /var/log/nginx/access.log;
+                  error_log /var/log/nginx/error.log;
+                  server{
+                    listen 80;
+                    server_name ${IPAddress};
+                    location / {
+                    proxy_pass http://localhost:8080;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  }
+                location /wp-admin {
+                    allow all;
+                    proxy_pass http://localhost:8080;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                } }
+                ### Gzip Settings##
+                  gzip on;
+                # gzip_vary on;
+                # gzip_proxied any;
+                # gzip_comp_level 6;
+                # gzip_buffers 16 8k;
+                # gzip_http_version 1.1;
+                # gzip_types text/plain text/css application/json application/javascript
+                #text/xml application/xml application/xml+rss text/javascript;
+                ##
+                # Virtual Host Configs"
+                ##"
+                include /etc/nginx/conf.d/*.conf;
+                include /etc/nginx/sites-enabled/*;
+                }
+          commands:
+            00_remove_default:
+              command: "sudo rm /etc/nginx/sites-enabled/default"
+            01_start_nginx:
+              command: "systemctl restart nginx"
+            02_start_mariadb:
+              command: "systemctl restart mariadb"   
+    Properties:
+      ImageId: ami-0557a15b87f6559cf
+      InstanceType: !Ref InstanceType        
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: 'true'
+          GroupSet: 
+            - !Ref InstanceSecurityGroup
+          DeviceIndex: '0'
+          DeleteOnTermination: 'true'
+          SubnetId: !GetAtt NestedSubnet.Outputs.SubnetId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          sudo apt-get update -y
+          sudo apt-get -y install python3-pip
+          mkdir -p /opt/aws/
+          sudo pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+          sudo ln -s /usr/local/init/ubuntu/cfn-hup /etc/init.d/cfn-hup
+          /usr/local/bin/cfn-init -v --stack ${AWS::StackName} --resource WebServerInstance --configsets ec2_setup --region ${AWS::Region}
+          /usr/local/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WebServerInstance --region ${AWS::Region}
+  MyElasticIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      EIP:
+        !Ref IPAddress
+      InstanceId:
+        !Ref WebServerInstance
+Outputs:
+  URL:
+    Value:
+      !Join
+      - ''
+      - - http://
+        - !GetAtt
+          - WebServerInstance
+          - PublicIp
+    Description: Newly created application Url
